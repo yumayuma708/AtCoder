@@ -1,11 +1,14 @@
-def main():
-    import sys
-    input = sys.stdin.read
-    data = input().split()
+N, Q = map(int, input().split())
+A = list(map(int, input().split()))  #Aは来場者数
+L = [ None ] * Q 
+R = [ None ] * Q 
+for j in range(Q):
+	L[j], R[j] = map(int, input().split())
 
-   
-    
-
-
-if __name__ == "__main__":
-    main()
+S = [ None ] * (N + 1)
+S[0] = 0
+for i in range(N):
+	S[i + 1] = S[i] + A[i]
+ 
+for j in range(Q):
+	print(S[R[j]] - S[L[j] - 1])
