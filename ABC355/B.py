@@ -4,21 +4,16 @@ B = list(map(int,input().split()))
 
 C = sorted(A+B)
 
-for i in range (N):
-    for j in range (N):
-        D = [C[i],C[j]]
+flag = False
 
-for k in range (len(C)):
-    for l in range (len(C)):
-        E = [C[k],C[l]]
+for i in C:
+    if i not in A :
+        flag =False
+    
+    elif i in A and flag == False:
+        flag = True
+    else:
+        print("Yes")
+        exit()
 
-ans = 0
-for i in range (N):
-    for j in range (N):
-        if D[i]==E[j]:
-            ans = 1
-
-if ans == 1:
-    print("Yes")
-else:
-    print("No")
+print("No")
