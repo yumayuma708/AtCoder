@@ -2,189 +2,113 @@
 function createDateFolders() {
   const today = new Date();
   const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
-  const yesterdayStr = Utilities.formatDate(yesterday, 'Asia/Tokyo', 'yyyy-MM-dd');
+
+  // 内部ロジック用（検証日比較・フォルダ名）
+  const yesterdayKeyStr = Utilities.formatDate(yesterday, 'Asia/Tokyo', 'yyyy-MM-dd');
+
+  // シート表示用の日付（「日付フォルダ(YYYY/MM/DD)」など）
+  const yesterdayDisplayStr = Utilities.formatDate(yesterday, 'Asia/Tokyo', 'yyyy/MM/dd');
+
+  // フラグ用タイムスタンプ（〇〇フラグ列用）
+  const flagTimestampStr = Utilities.formatDate(today, 'Asia/Tokyo', 'yyyy/MM/dd/HH:mm:ss');
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const logSheet = ss.getSheetByName('modify_progress_log');
 
-  // シート取得
-  const basicMasterSheet   = ss.getSheetByName("基礎定着_マスタ");
-  const basicModifiedSheet = ss.getSheetByName("基礎定着_修正済みフォルダ");
-  const basicLogSheet      = ss.getSheetByName("基礎定着_修正済みフォルダ_ログ");
-
-  const courseMasterSheet   = ss.getSheetByName("高等対応_マスタ");
-  const courseModifiedSheet = ss.getSheetByName("高等対応_修正済みフォルダ");
-  const courseLogSheet      = ss.getSheetByName("高等対応_修正済みフォルダ_ログ");
-
-  const courseIdentifySheet = ss.getSheetByName("高等対応識別表");
-
-  // 日付親フォルダ
-  const BASIC_PARENT_ID        = "11fDYRsGL3MKSDT7YX4hJbRxiBwkVjOTZ";
-  const COURSE_1A2B_PARENT_ID  = "1iI4qL6gMfeb_q0OYPDgnamknLszok5H5";
-  const COURSE_3C_PARENT_ID    = "1f6c1IpM2aEG0HHoCae8LaQlzvGyeP7Vh";
-
-  // 基礎定着
-  processBasicDateFolder(
-    basicMasterSheet,
-    BASIC_PARENT_ID,
-    yesterdayStr,
-    basicModifiedSheet,
-    basicLogSheet
-  );
-
-  // 高等対応
-  processCourseDateFolders(
-    courseMasterSheet,
-    courseModifiedSheet,
-    courseIdentifySheet,
-    yesterdayStr,
-    COURSE_1A2B_PARENT_ID,
-    COURSE_3C_PARENT_ID,
-    courseLogSheet
-  );
-}
-
-
-// 基礎定着
-function processBasicDateFolder(masterSheet, parentFolderId, targetDateStr, modifiedSheet, logSheet) {
-  const fileDates = getFormattedDates(masterSheet, "C3:C");
-
-  if (!fileDates.includes(targetDateStr)) return;
-
-  console.log(`基礎定着：${targetDateStr} の日付フォルダを作成します`);
-
-  const parent = DriveApp.getFolderById(parentFolderId);
-  const dateFolder = parent.createFolder(targetDateStr);
-
-  const mondaiFolder = dateFolder.createFolder("問題");
-  const pngFolder    = dateFolder.createFolder("問題png");
-  dateFolder.createFolder("解答");
-
-  console.log("基礎定着：フォルダ作成完了");
-
-  recordDateFolderInfo("基礎定着", targetDateStr, {
-    dateFolder: dateFolder.getId(),
-    mondaiFolder: mondaiFolder.getId(),
-    pngFolder: pngFolder.getId()
-  });
-
-  logBasicModifiedData(modifiedSheet, logSheet);
-}
-
-
-// 高等対応
-function processCourseDateFolders(
-  masterSheet,
-  modifiedSheet,
-  identifySheet,
-  targetDateStr,
-  parent1A2BId,
-  parent3CId,
-  logSheet
-) {
-  const fileDates = getFormattedDates(masterSheet, "C3:C");
-
-  if (!fileDates.includes(targetDateStr)) {
-    console.log("高等対応：昨日の更新なし → 日付フォルダ作成スキップ");
+  const lastRow = logSheet.getLastRow();
+  if (lastRow < 2) {
+    console.log('modify_progress_log にデータ行がありません。');
     return;
   }
 
-  console.log(`高等対応：${targetDateStr} の日付フォルダ作成開始`);
+  // ログシートの全データを取得（ヘッダ行を除く）
+  const logValues = logSheet.getRange(2, 1, lastRow - 1, 15).getValues();
 
-  const modifiedData = modifiedSheet.getRange(3, 1, modifiedSheet.getLastRow() - 2, 2).getValues();
-  const identifyMap = buildIdentifyMap(identifySheet);
+  // コースごとの親フォルダID
+  const BASIC_PARENT_ID       = '11fDYRsGL3MKSDT7YX4hJbRxiBwkVjOTZ';
+  const COURSE_1A2B_PARENT_ID = '1iI4qL6gMfeb_q0OYPDgnamknLszok5H5';
+  const COURSE_3C_PARENT_ID   = '1f6c1IpM2aEG0HHoCae8LaQlzvGyeP7Vh';
 
-  modifiedData.forEach((row, idx) => {
-    const folderId = row[1];
-    if (!folderId) return;
+  const parentFolderMap = {
+    '基礎': BASIC_PARENT_ID,
+    '高等1A2B': COURSE_1A2B_PARENT_ID,
+    '高等3C': COURSE_3C_PARENT_ID,
+  };
 
-    const courseType = identifyMap[folderId];
+  // コースごとに作成 / 取得した日付フォルダとサブフォルダをキャッシュ
+  const courseFolderInfoMap = {}; // course -> { dateFolderId, mondaiFolderId, pngFolderId }
 
-    if (!courseType) {
-      console.log(`識別不可：folderId=${folderId}（行 ${idx + 3}） → スキップ`);
-      return;
+  for (let i = 0; i < logValues.length; i++) {
+    const row = logValues[i];
+
+    const course = row[0];           // A列: course
+    const verifiedDate = row[4];     // E列: 検証日 (文字列想定)
+    const createdFlag = row[5];      // F列: 日付フォルダ作成フラグ（タイムスタンプ）
+
+    // 検証日が昨日と一致しない or すでに日付フォルダ作成済みならスキップ
+    if (verifiedDate !== yesterdayKeyStr || createdFlag) {
+      continue;
     }
 
-    let parentFolder;
-    if (courseType === "1A2B") {
-      parentFolder = DriveApp.getFolderById(parent1A2BId);
-    } else if (courseType === "3C") {
-      parentFolder = DriveApp.getFolderById(parent3CId);
+    const parentId = parentFolderMap[course];
+    if (!parentId) {
+      console.log('親フォルダIDが設定されていないコースです: ' + course);
+      continue;
     }
 
-    const dateFolder = parentFolder.createFolder(targetDateStr); // ← 重要
-    console.log(`→ ${courseType} 日付フォルダ作成 ID=${dateFolder.getId()}`);
+    // まだこのコースのフォルダ情報を作っていなければ作成 or 取得
+    if (!courseFolderInfoMap[course]) {
+      const parentFolder = DriveApp.getFolderById(parentId);
 
-    recordDateFolderInfo(courseType, targetDateStr, {
-      dateFolder: dateFolder.getId(),
-      mondaiFolder: "",
-      pngFolder: ""
-    });
-  });
+      // 「yyyy-MM-dd」という名前の日付フォルダを取得 or 作成
+      let dateFolder;
+      const it = parentFolder.getFoldersByName(yesterdayKeyStr);
+      if (it.hasNext()) {
+        dateFolder = it.next();
+        console.log(course + '：既存の日付フォルダを利用します: ' + yesterdayKeyStr + ' (ID=' + dateFolder.getId() + ')');
+      } else {
+        dateFolder = parentFolder.createFolder(yesterdayKeyStr);
+        console.log(course + '：新しい日付フォルダを作成しました: ' + yesterdayKeyStr + ' (ID=' + dateFolder.getId() + ')');
+      }
 
-  logCourseModifiedData(modifiedSheet, logSheet);
-}
+      // サブフォルダ「問題」「解答」「問題png」を取得 or 作成
+      const mondaiFolder = getOrCreateSubfolder(dateFolder, '問題');
+      getOrCreateSubfolder(dateFolder, '解答'); // 解答フォルダはIDをログには保持しない
+      const pngFolder = getOrCreateSubfolder(dateFolder, '問題png');
 
+      courseFolderInfoMap[course] = {
+        dateFolderId: dateFolder.getId(),
+        mondaiFolderId: mondaiFolder.getId(),
+        pngFolderId: pngFolder.getId(),
+      };
+    }
 
-// 以下ヘルパー
-function logBasicModifiedData(modifiedSheet, logSheet) {
-  writeModifiedDataToLog(modifiedSheet, logSheet, 14, 2);
-}
+    const info = courseFolderInfoMap[course];
 
-function logCourseModifiedData(modifiedSheet, logSheet) {
-  writeModifiedDataToLog(modifiedSheet, logSheet, 14, 2);
-}
+    // F列: 日付フォルダ作成フラグ（タイムスタンプ）
+    row[5] = flagTimestampStr;
+    // G列: 日付フォルダ（表示用の日付 = 昨日, "YYYY/MM/DD"）
+    row[6] = yesterdayDisplayStr;
+    // H列: 日付フォルダID
+    row[7] = info.dateFolderId;
+    // I列: 問題フォルダID
+    row[8] = info.mondaiFolderId;
+    // J列: 問題pngフォルダID
+    row[9] = info.pngFolderId;
 
-
-function writeModifiedDataToLog(modifiedSheet, logSheet, colCount, extraCount) {
-  const lastRow = modifiedSheet.getLastRow();
-  if (lastRow < 3) return;
-
-  const data = modifiedSheet.getRange(3, 1, lastRow - 2, colCount).getValues();
-
-  const logLastRow = logSheet.getLastRow();
-  if (logLastRow > 2) {
-    logSheet.getRange(3, 1, logLastRow - 2, colCount).clear();
-    logSheet.getRange(3, colCount + 2, logLastRow - 2, extraCount).clear();
+    logValues[i] = row;
   }
 
-  logSheet.getRange(3, 1, data.length, data[0].length).setValues(data);
+  // 変更されたログをまとめて書き戻す
+  logSheet.getRange(2, 1, logValues.length, 15).setValues(logValues);
+
+  console.log('createDateFolders: modify_progress_log をもとに日付フォルダの作成・更新を完了しました。');
 }
 
-
-function getFormattedDates(sheet, rangeA1) {
-  return sheet
-    .getRange(rangeA1)
-    .getValues()
-    .flat()
-    .filter(String)
-    .map(date => Utilities.formatDate(date, "Asia/Tokyo", "yyyy-MM-dd"));
-}
-
-
-function buildIdentifyMap(sheet) {
-  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 3).getValues();
-  const map = {};
-  values.forEach(row => {
-    const folderId = row[1];
-    const courseType = row[2];
-    if (folderId && courseType) {
-      map[folderId] = courseType;
-    }
-  });
-  return map;
-}
-
-
-// 出力シートへ追加
-function recordDateFolderInfo(courseName, dateStr, ids) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName("date_folder_output");
-
-  sheet.appendRow([
-    courseName,
-    dateStr,
-    ids.dateFolder,
-    ids.mondaiFolder,
-    ids.pngFolder
-  ]);
+function getOrCreateSubfolder(parentFolder, name) {
+  const it = parentFolder.getFoldersByName(name);
+  if (it.hasNext()) {
+    return it.next();
+  }
+  return parentFolder.createFolder(name);
 }
